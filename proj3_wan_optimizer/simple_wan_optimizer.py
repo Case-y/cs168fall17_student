@@ -111,15 +111,16 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
 
     def send_all_wan(self):
         # Don't forget to Store hash and send to the other middle box
-        blocker = self.buffered_packets[0]
-        blocker_msg = utils.get_hash(blocker.payload)
-        not_block = True if blocker_msg in self.buffered_hashes else False
+        not_block = True
+        cached_hashes = []
         for packet in self.buffered_packets:
             hashed_msg = utils.get_hash(packet.payload)
             if hashed_msg not in self.buffered_hashes:
                 not_block = False
                 self.buffered_hashes.add(hashed_msg)
-            elif not_block:
+            cached_hashes.append(hashed_msg)
+        for packet, hashed_msg in zip(self.buffered_packets, cached_hashes):
+            if not_block:
                 packet.payload = hashed_msg
                 packet.is_raw_data = False
             self.send(packet, self.wan_port)
