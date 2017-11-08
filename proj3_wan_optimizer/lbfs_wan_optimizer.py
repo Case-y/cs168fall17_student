@@ -100,9 +100,9 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                             packet.payload = split_block_hashed_msg
                         self.send(packet, self.wan_port)
                         split_start = split_end
-                        split_end = split_end + utils.MAX_PACKET_SIZE
+                        split_end += utils.MAX_PACKET_SIZE
 
-                    # Leftover msg?
+                    # Handle Leftover Block
                     leftover_block_msg = block_msg[split_start:]
                     if leftover_block_msg != "":
                         leftover_hashed_msg = utils.get_hash(leftover_block_msg)
@@ -129,7 +129,8 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                 # If the leftover msg is a fin :)
                 self.handle_drop(packet)
 
-    def handle_drop(self, packet):
+    def handle_drop(self, packet, is_fin=True):
+        # Find hanging message...
         hanging_msg = self.hanging_destinations[packet.dest]
         hanging_msg_size = hanging_msg.__len__()
         if hanging_msg_size > 0:
@@ -148,8 +149,9 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                     packet.is_raw_data = False
                 self.send(packet, self.wan_port)
                 start_block = end_block
-                end_block = end_block + utils.MAX_PACKET_SIZE
-            packet.is_fin = True
+                end_block += utils.MAX_PACKET_SIZE
+            packet.is_fin = is_fin
+            # Handle Leftover Block
             leftover_block_msg = hanging_msg[start_block:]
             if leftover_block_msg != "":
                 hashed_msg = utils.get_hash(leftover_block_msg)
@@ -160,5 +162,8 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                 else:
                     packet.payload = hashed_msg
                     packet.is_raw_data = False
+            else:
+                packet.payload = ""
+                packet.is_raw_data = True
         self.hanging_destinations[packet.dest] = ""
         self.send(packet, self.wan_port)

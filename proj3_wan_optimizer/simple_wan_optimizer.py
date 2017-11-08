@@ -1,5 +1,6 @@
 import wan_optimizer
 import utils
+import tcp_packet
 
 
 class WanOptimizer(wan_optimizer.BaseWanOptimizer):
@@ -16,10 +17,9 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
         wan_optimizer.BaseWanOptimizer.__init__(self)
         # Add any code that you like here (but do not add any constructor arguments).
         self.hash_data = dict()
+        self.receives = dict()
         self.buffered_hashes = set()
-        self.buffered_bytes = 0
-        self.buffered_payload = ""
-        self.buffered_packets = []
+        self.buffers = dict()     # (src, destination) <--> message so far
 
     def receive(self, packet):
         """ Handles receiving a packet.
@@ -35,16 +35,30 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
         """
 
         packet_size = packet.size()
+        buffer_key = (packet.src, packet.dest)
 
         if packet_size > utils.MAX_PACKET_SIZE:
             # For all communication, the packet size should be less than or equal to utils.MAX_PACKET_SIZE
             return
 
+        if buffer_key not in self.buffers:
+            self.buffers[buffer_key] = ""
+        if packet.dest in self.address_to_port and buffer_key not in self.receives:
+            self.receives[buffer_key] = ""
+
         if not packet.is_raw_data and packet.payload in self.hash_data:
             # The packet got hashed and is a valid key. Send to the correct clients who are cached.
-            packet.payload = self.hash_data[packet.payload]
-            packet.is_raw_data = True
-            self.send(packet, self.address_to_port[packet.dest])
+            message = self.hash_data[packet.payload]
+            start_block = 0
+            end_block = utils.MAX_PACKET_SIZE
+            while end_block < self.BLOCK_SIZE:
+                split_msg = message[start_block:end_block]
+                self.send(tcp_packet.Packet(packet.src, packet.dest,
+                                            True, False, split_msg), self.address_to_port[packet.dest])
+                start_block, end_block = end_block, end_block + utils.MAX_PACKET_SIZE
+            carry_over_msg = message[start_block:]
+            self.send(tcp_packet.Packet(packet.src, packet.dest,
+                                        True, packet.is_fin, carry_over_msg), self.address_to_port[packet.dest])
 
         elif packet.dest in self.address_to_port and packet.src in self.address_to_port:
             # Expected behavior for when a host sends a packet to a host on the same local network
@@ -53,115 +67,88 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
         elif packet.dest in self.address_to_port:
             # The packet is destined to one of the clients connected to this middle box;
             # send the packet there. Since bytes were sent from WAN to client, construct hash mapping here.
-            if packet_size == 0 and packet.is_fin:
-                self.send(packet, self.address_to_port[packet.dest])
-                return
-            hashed_msg = utils.get_hash(packet.payload)
-            self.hash_data[hashed_msg] = packet.payload
-            self.send(packet, self.address_to_port[packet.dest])
+            # Should be block size.
+            self.receives[buffer_key] += packet.payload
+            received_length = self.receives[buffer_key].__len__()
+            if received_length == self.BLOCK_SIZE or packet.is_fin:
+                message, self.receives[buffer_key] = self.receives[buffer_key], ""
+                hashed_msg = utils.get_hash(message)
+                self.hash_data[hashed_msg] = message
+                start_block = 0
+                end_block = utils.MAX_PACKET_SIZE
+                while end_block < self.BLOCK_SIZE:
+                    split_msg = message[start_block:end_block]
+                    self.send(tcp_packet.Packet(packet.src, packet.dest,
+                                                True, False, split_msg), self.address_to_port[packet.dest])
+                    start_block, end_block = end_block, end_block + utils.MAX_PACKET_SIZE
+                carry_over_msg = message[start_block:]
+                self.send(tcp_packet.Packet(packet.src, packet.dest,
+                                            True, packet.is_fin, carry_over_msg), self.address_to_port[packet.dest])
 
         else:
             # The packet must be destined to a host connected to the other middle box
             # so send it across the WAN. Bytes sent from client to WAN.
-            total_bytes = packet_size + self.buffered_bytes
-            self.buffered_payload = self.buffered_payload + packet.payload
-            self.buffered_packets.append(packet)
+            buffered_length = self.buffers[buffer_key].__len__()
+            total_bytes = packet_size + buffered_length
             if total_bytes >= self.BLOCK_SIZE:
                 if total_bytes == self.BLOCK_SIZE:
-                    self.send_all_wan()
+                    self.buffers[buffer_key] += packet.payload
+                    self.send_all_wan(packet)
                     return
                 # Grab the bytes that made it, heh and don't :(
-                squeezed_bytes = self.BLOCK_SIZE - self.buffered_bytes
+                squeezed_bytes = self.BLOCK_SIZE - buffered_length
                 # Construct packets
                 squeezed_msg = packet.payload[:squeezed_bytes]
                 leftover_msg = packet.payload[squeezed_bytes:]
-                packet.payload = squeezed_msg
+                self.buffers[buffer_key] += squeezed_msg
                 # Send the first block of 8000 bytes
-                self.send_all_wan()
-                leftover_packet = packet
-                total_bytes -= - self.BLOCK_SIZE
-                while total_bytes >= self.BLOCK_SIZE:
-                    # There are more blocks... YIKES! Handle hashing here too :\
-                    squeezed_msg = leftover_msg[:self.BLOCK_SIZE]
-                    leftover_msg = leftover_msg[self.BLOCK_SIZE:]
-                    hashed_msg = utils.get_hash(squeezed_msg)
-                    if hashed_msg not in self.buffered_hashes:
-                        self.buffered_hashes.add(hashed_msg)
-                        leftover_packet.payload = squeezed_msg
-                    else:
-                        leftover_packet.payload = hashed_msg
-                        packet.is_raw_data = False
-                    self.send(leftover_packet, self.wan_port)
-                    total_bytes -= self.BLOCK_SIZE
-                if total_bytes == 0:
-                    # Handle this case if total_bytes % self.BLOCK_SIZE == 0... no leftover_msg !
-                    return
-                leftover_packet.payload = leftover_msg
-                self.handle_leftover_packet(leftover_packet, leftover_msg)
+                self.send_all_wan(packet)
+                # Include leftover message
+                self.buffers[buffer_key] = leftover_msg
+                if packet.is_fin:
+                    self.handle_leftover_packet(packet, leftover_msg)
 
             else:
                 # if total_bytes < self.BLOCK_SIZE:
+                self.buffers[buffer_key] += packet.payload
                 if packet.is_fin:
                     if total_bytes == 0:
-                        self.buffered_packets.pop()
                         self.send(packet, self.wan_port)
                     else:
-                        self.send_all_wan()
-                else:
-                    self.buffered_bytes = total_bytes
+                        self.send_all_wan(packet)
 
-    def send_all_wan(self):
+    def send_all_wan(self, packet):
         # Don't forget to Store hash and send to the other middle box
+        # send_all_wan should only hash in self.BLOCK_SIZE
+        buffer_key = (packet.src, packet.dest)
+        message = self.buffers[buffer_key]
+        hashed_msg = utils.get_hash(message)
+        if hashed_msg not in self.buffered_hashes:
+            self.buffered_hashes.add(hashed_msg)
+            start_block = 0
+            end_block = utils.MAX_PACKET_SIZE
+            while end_block < self.BLOCK_SIZE:
+                split_msg = message[start_block:end_block]
+                self.send(tcp_packet.Packet(packet.src, packet.dest, True, False, split_msg), self.wan_port)
+                start_block, end_block = end_block, end_block + utils.MAX_PACKET_SIZE
+            carry_over_msg = message[start_block:]
+            self.send(tcp_packet.Packet(packet.src, packet.dest, True, packet.is_fin, carry_over_msg), self.wan_port)
+        else:
+            self.send(tcp_packet.Packet(packet.src, packet.dest, False, packet.is_fin, hashed_msg), self.wan_port)
 
-        # Deal with fragmentation case
-        long_hashed = utils.get_hash(self.buffered_payload)
-        if long_hashed in self.buffered_hashes:
-            for packet in self.buffered_packets:
-                hashed_msg = utils.get_hash(packet.payload)
-                if hashed_msg not in self.buffered_hashes:
-                    self.buffered_hashes.add(hashed_msg)
-                else:
-                    packet.payload = hashed_msg
-                    packet.is_raw_data = False
-                self.send(packet, self.wan_port)
-            self.buffered_bytes = 0
-            self.buffered_payload = ""
-            self.buffered_packets = []
-            return
-        self.buffered_hashes.add(long_hashed)
-
-        # Deal with segmented case
-        not_block = True
-        cached_hashes = []
-        for packet in self.buffered_packets:
-            hashed_msg = utils.get_hash(packet.payload)
-            if hashed_msg not in self.buffered_hashes:
-                not_block = False
-                self.buffered_hashes.add(hashed_msg)
-            cached_hashes.append(hashed_msg)
-        for packet, hashed_msg in zip(self.buffered_packets, cached_hashes):
-            if not_block:
-                packet.payload = hashed_msg
-                packet.is_raw_data = False
-            self.send(packet, self.wan_port)
-
-        # Delete buffer pool
-        self.buffered_bytes = 0
-        self.buffered_payload = ""
-        self.buffered_packets = []
+        # Remove specific buffer pool information
+        self.buffers[buffer_key] = ""
 
     def handle_leftover_packet(self, leftover_packet, leftover_msg):
         # Don't forget to Store hash and send to the other middle box
-        if leftover_packet.is_fin:
-            hashed_msg = utils.get_hash(leftover_msg)
-            if hashed_msg not in self.buffered_hashes:
-                self.buffered_hashes.add(hashed_msg)
-            else:
-                # Previous hashed_msg constructed already!
-                leftover_packet.payload = hashed_msg
-                leftover_packet.is_raw_data = False
-            self.send(leftover_packet, self.wan_port)
+        buffer_key = (leftover_packet.src, leftover_packet.dest)
+        hashed_msg = utils.get_hash(leftover_msg)
+        if hashed_msg not in self.buffered_hashes:
+            self.buffered_hashes.add(hashed_msg)
         else:
-            self.buffered_bytes = leftover_msg.__len__()  # the leftover_bytes
-            self.buffered_payload = leftover_msg
-            self.buffered_packets.append(leftover_packet)
+            # Previous hashed_msg constructed already!
+            leftover_packet.payload = hashed_msg
+            leftover_packet.is_raw_data = False
+        self.send(leftover_packet, self.wan_port)
+        self.buffers[buffer_key] = ""
+

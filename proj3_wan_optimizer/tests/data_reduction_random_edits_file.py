@@ -58,6 +58,9 @@ def data_reduction_random_edits_file(middlebox_module, testing_part_1):
 
     bytes_sent = wide_area_network.get_total_bytes_sent()
 
+    # print(bytes_sent)
+    # print(bytes_in_sent_files)
+
     reduction = (float(bytes_in_sent_files - bytes_sent)
                  / float(bytes_in_sent_files))
 
