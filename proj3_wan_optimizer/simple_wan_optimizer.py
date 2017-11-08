@@ -49,16 +49,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
         if not packet.is_raw_data and packet.payload in self.hash_data:
             # The packet got hashed and is a valid key. Send to the correct clients who are cached.
             message = self.hash_data[packet.payload]
-            start_block = 0
-            end_block = utils.MAX_PACKET_SIZE
-            while end_block < self.BLOCK_SIZE:
-                split_msg = message[start_block:end_block]
-                self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                            True, False, split_msg), self.address_to_port[packet.dest])
-                start_block, end_block = end_block, end_block + utils.MAX_PACKET_SIZE
-            carry_over_msg = message[start_block:]
-            self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                        True, packet.is_fin, carry_over_msg), self.address_to_port[packet.dest])
+            self.give_client_block(packet, message)
 
         elif packet.dest in self.address_to_port and packet.src in self.address_to_port:
             # Expected behavior for when a host sends a packet to a host on the same local network
@@ -72,18 +63,8 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
             received_length = self.receives[buffer_key].__len__()
             if received_length == self.BLOCK_SIZE or packet.is_fin:
                 message, self.receives[buffer_key] = self.receives[buffer_key], ""
-                hashed_msg = utils.get_hash(message)
-                self.hash_data[hashed_msg] = message
-                start_block = 0
-                end_block = utils.MAX_PACKET_SIZE
-                while end_block < self.BLOCK_SIZE:
-                    split_msg = message[start_block:end_block]
-                    self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                                True, False, split_msg), self.address_to_port[packet.dest])
-                    start_block, end_block = end_block, end_block + utils.MAX_PACKET_SIZE
-                carry_over_msg = message[start_block:]
-                self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                            True, packet.is_fin, carry_over_msg), self.address_to_port[packet.dest])
+                self.hash_data[utils.get_hash(message)] = message
+                self.give_client_block(packet, message)
 
         else:
             # The packet must be destined to a host connected to the other middle box
@@ -135,7 +116,6 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
             self.send(tcp_packet.Packet(packet.src, packet.dest, True, packet.is_fin, carry_over_msg), self.wan_port)
         else:
             self.send(tcp_packet.Packet(packet.src, packet.dest, False, packet.is_fin, hashed_msg), self.wan_port)
-
         # Remove specific buffer pool information
         self.buffers[buffer_key] = ""
 
@@ -149,6 +129,19 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
             # Previous hashed_msg constructed already!
             leftover_packet.payload = hashed_msg
             leftover_packet.is_raw_data = False
+        # Send leftover_packet after some modifications
         self.send(leftover_packet, self.wan_port)
+        # Remove specific buffer pool information
         self.buffers[buffer_key] = ""
 
+    def give_client_block(self, packet, message):
+        start_block = 0
+        end_block = utils.MAX_PACKET_SIZE
+        while end_block < self.BLOCK_SIZE:
+            split_msg = message[start_block:end_block]
+            self.send(tcp_packet.Packet(packet.src, packet.dest,
+                                        True, False, split_msg), self.address_to_port[packet.dest])
+            start_block, end_block = end_block, end_block + utils.MAX_PACKET_SIZE
+        carry_over_msg = message[start_block:]
+        self.send(tcp_packet.Packet(packet.src, packet.dest,
+                                    True, packet.is_fin, carry_over_msg), self.address_to_port[packet.dest])
