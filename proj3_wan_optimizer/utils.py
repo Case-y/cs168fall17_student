@@ -21,4 +21,3 @@ def get_last_n_bits(string, n):
     # get the last n bits of the binary string1
     last_n_bits_of_hash = string_in_bits[-n:]
     return last_n_bits_of_hash
-

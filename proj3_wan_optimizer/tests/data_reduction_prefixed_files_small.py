@@ -63,7 +63,7 @@ def data_reduction_prefixed_files_small(middlebox_module, testing_part_1):
 
     bytes_sent = wide_area_network.get_total_bytes_sent()
 
-    # print bytes_sent, bytes_in_sent_file, bytes_in_received_file
+    # print(bytes_sent, bytes_in_sent_files)
 
     reduction = (float(bytes_in_sent_files - bytes_sent)
                  / float(bytes_in_sent_files))

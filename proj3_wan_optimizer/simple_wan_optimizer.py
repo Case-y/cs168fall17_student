@@ -64,6 +64,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
             # The packet must be destined to a host connected to the other middle box
             # so send it across the WAN. Bytes sent from client to WAN.
             total_bytes = packet_size + self.buffered_bytes
+            self.buffered_payload = self.buffered_payload + packet.payload
             self.buffered_packets.append(packet)
             if total_bytes >= self.BLOCK_SIZE:
                 if total_bytes == self.BLOCK_SIZE:
@@ -78,7 +79,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                 # Send the first block of 8000 bytes
                 self.send_all_wan()
                 leftover_packet = packet
-                total_bytes = total_bytes - self.BLOCK_SIZE
+                total_bytes -= - self.BLOCK_SIZE
                 while total_bytes >= self.BLOCK_SIZE:
                     # There are more blocks... YIKES! Handle hashing here too :\
                     squeezed_msg = leftover_msg[:self.BLOCK_SIZE]
@@ -91,7 +92,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                         leftover_packet.payload = hashed_msg
                         packet.is_raw_data = False
                     self.send(leftover_packet, self.wan_port)
-                    total_bytes = total_bytes - self.BLOCK_SIZE
+                    total_bytes -= self.BLOCK_SIZE
                 if total_bytes == 0:
                     # Handle this case if total_bytes % self.BLOCK_SIZE == 0... no leftover_msg !
                     return
@@ -111,6 +112,25 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
 
     def send_all_wan(self):
         # Don't forget to Store hash and send to the other middle box
+
+        # Deal with fragmentation case
+        long_hashed = utils.get_hash(self.buffered_payload)
+        if long_hashed in self.buffered_hashes:
+            for packet in self.buffered_packets:
+                hashed_msg = utils.get_hash(packet.payload)
+                if hashed_msg not in self.buffered_hashes:
+                    self.buffered_hashes.add(hashed_msg)
+                else:
+                    packet.payload = hashed_msg
+                    packet.is_raw_data = False
+                self.send(packet, self.wan_port)
+            self.buffered_bytes = 0
+            self.buffered_payload = ""
+            self.buffered_packets = []
+            return
+        self.buffered_hashes.add(long_hashed)
+
+        # Deal with segmented case
         not_block = True
         cached_hashes = []
         for packet in self.buffered_packets:
@@ -127,6 +147,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
 
         # Delete buffer pool
         self.buffered_bytes = 0
+        self.buffered_payload = ""
         self.buffered_packets = []
 
     def handle_leftover_packet(self, leftover_packet, leftover_msg):
@@ -142,4 +163,5 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
             self.send(leftover_packet, self.wan_port)
         else:
             self.buffered_bytes = leftover_msg.__len__()  # the leftover_bytes
+            self.buffered_payload = leftover_msg
             self.buffered_packets.append(leftover_packet)
