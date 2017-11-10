@@ -96,8 +96,16 @@ def main():
         dest="verify_data_is_sent_incrementally",
         action="store_true")
     parser.add_argument(
-        "--verify-middlebox-handles-interleaved-data",
+        "--verify_middlebox_handles_interleaved_data",
         dest="verify_middlebox_handles_interleaved_data",
+        action="store_true")
+    parser.add_argument(
+        "--one_sender_multiple_sends",
+        dest="one_sender_multiple_sends",
+        action="store_true")
+    parser.add_argument(
+        "--multiple_clients_multiple_files",
+        dest="multiple_clients_multiple_files",
         action="store_true")
 
     args = parser.parse_args()
@@ -214,6 +222,20 @@ def main():
         test_module = verify_middlebox_handles_interleaved_data
         passed_tests += run_test(
             test_module.verify_middlebox_handles_interleaved_data,
+            middlebox_module,
+            testing_part_1)
+        total_tests += 1
+    if args.one_sender_multiple_sends or args.run_all:
+        test_module = one_sender_multiple_sends
+        passed_tests += run_test(
+            test_module.one_sender_multiple_sends,
+            middlebox_module,
+            testing_part_1)
+        total_tests += 1
+    if args.multiple_clients_multiple_files or args.run_all:
+        test_module = multiple_clients_multiple_files
+        passed_tests += run_test(
+            test_module.multiple_clients_multiple_files,
             middlebox_module,
             testing_part_1)
         total_tests += 1

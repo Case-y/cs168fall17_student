@@ -50,7 +50,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
         if not packet.is_raw_data and packet.payload in self.hash_data:
             # The packet got hashed and is a valid key. Send to the correct clients who are cached.
             message = self.hash_data[packet.payload]
-            self.give_client_block(packet, message)
+            self.give_block(packet, message, self.address_to_port[packet.dest])
 
         elif packet.dest in self.address_to_port and packet.src in self.address_to_port:
             # Expected behavior for when a host sends a packet to a host on the same local network
@@ -64,7 +64,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                 # set packet.is_raw_data to be intentionally False to terminate block
                 message, self.receives[buffer_key] = self.receives[buffer_key], ""
                 self.hash_data[utils.get_hash(message)] = message
-                self.give_client_block(packet, message)
+                self.give_block(packet, message, self.address_to_port[packet.dest])
 
         else:
             # The packet must be destined to a host connected to the other middle box
@@ -73,7 +73,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
             # Set up scanning through the packet
             start = 0
             start_window = 0
-            end_window = self.window_size
+            end_window = self.window_sizegit
             # Include hanging message from before
             copied_payload = self.buffers[buffer_key] + packet.payload[:]
             while end_window <= packet_size:
@@ -84,24 +84,9 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                     self.buffers[buffer_key] = ""
                     block_msg = copied_payload[start:end_window]
                     block_hash_msg = utils.get_hash(block_msg)
-                    if block_hash_msg not in self.buffered_hashes:
-                        self.buffered_hashes.add(block_hash_msg)
-                        split_start = 0
-                        split_end = utils.MAX_PACKET_SIZE
-                        block_msg_size = block_msg.__len__()
-                        # Split big block into block sized packets if necessary
-                        while split_end < block_msg_size:
-                            split_block_msg = block_msg[split_start:split_end]
-                            self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                                        True, False, split_block_msg), self.wan_port)
-                            split_start, split_end = split_end, split_end + utils.MAX_PACKET_SIZE
-                        carry_over_msg = block_msg[split_start:]
-                        # Intentionally, send the last packet message with is_raw_data = False
-                        self.send(tcp_packet.Packet(packet.src,
-                                                    packet.dest, False, packet.is_fin, carry_over_msg), self.wan_port)
-                    else:
-                        self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                                    False, packet.is_fin, block_hash_msg), self.wan_port)
+
+                    # Handle hashing
+                    self.handle_hash(packet, block_msg, block_hash_msg)
 
                     # Restart block / window size
                     start, start_window = end_window, end_window
@@ -114,10 +99,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
             start = self.buffers[buffer_key].__len__() if start == 0 else start
             self.buffers[buffer_key] += copied_payload[start:]
             if packet.is_fin:
-                if self.buffers[buffer_key].__len__() == 0:
-                    self.send(packet, self.wan_port)
-                else:
-                    self.handle_drop(packet)
+                self.handle_drop(packet) if self.buffers[buffer_key].__len__() else self.send(packet, self.wan_port)
 
     def handle_drop(self, packet):
         # Buffer Key
@@ -125,37 +107,34 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
 
         # Find hanging message...
         hanging_msg = self.buffers[buffer_key]
-        hanging_msg_size = hanging_msg.__len__()
         hashed_msg = utils.get_hash(hanging_msg)
 
-        if hashed_msg not in self.buffered_hashes:
-            self.buffered_hashes.add(hashed_msg)
-            split_start = 0
-            split_end = utils.MAX_PACKET_SIZE
-            while split_end < hanging_msg_size:
-                block_msg = hanging_msg[split_start:split_end]
-                self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                            True, False, block_msg), self.wan_port)
-                split_start, split_end = split_end, split_end + utils.MAX_PACKET_SIZE
-            carry_over_msg = hanging_msg[split_start:]
-            # Intentionally, send the last packet message with is_raw_data = False
-            self.send(tcp_packet.Packet(packet.src,
-                                        packet.dest, False, packet.is_fin, carry_over_msg), self.wan_port)
-        else:
-            self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                        False, packet.is_fin, hashed_msg), self.wan_port)
+        # Handle hashing
+        self.handle_hash(packet, hanging_msg, hashed_msg)
+
         # Remove specific buffer pool information
         self.buffers[buffer_key] = ""
 
-    def give_client_block(self, packet, message):
+    def handle_hash(self, packet, message, hashed_message):
+        # Check for key...
+        if hashed_message not in self.buffered_hashes:
+            self.buffered_hashes.add(hashed_message)
+            self.give_block(packet, message, self.wan_port, False)
+        else:
+            self.send(tcp_packet.Packet(packet.src, packet.dest,
+                                        False, packet.is_fin, hashed_message), self.wan_port)
+
+    def give_block(self, packet, message, port, intent=True):
+        # Give block to either Wan or client.
+        # Intent being False means to terminate the message on the other Wan end.
         start_block = 0
         end_block = utils.MAX_PACKET_SIZE
         block_message_length = message.__len__()
         while end_block < block_message_length:
             split_msg = message[start_block:end_block]
             self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                        True, False, split_msg), self.address_to_port[packet.dest])
+                                        True, False, split_msg), port)
             start_block, end_block = end_block, end_block + utils.MAX_PACKET_SIZE
         carry_over_msg = message[start_block:]
         self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                    True, packet.is_fin, carry_over_msg), self.address_to_port[packet.dest])
+                                    intent, packet.is_fin, carry_over_msg), port)
