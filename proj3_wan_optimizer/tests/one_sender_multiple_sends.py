@@ -59,3 +59,20 @@ def one_sender_multiple_sends(middlebox_module, testing_part_1):
             " {} and files sent are: {}\n".format(
                 total_count,
                 sent_files))
+    # Compute the data reduction ratio
+    expected_value = 0.49
+    with open(filename, "rb") as input_file:
+        input_data = input_file.read()
+
+    extra_data_length = len(filename) + len(client.FILENAME_DELIMITER)
+    bytes_in_sent_file = len(input_data) + extra_data_length
+
+    bytes_sent = wide_area_network.get_total_bytes_sent()
+
+    reduction = (float(bytes_in_sent_file * 2 - bytes_sent)
+                 / float(bytes_in_sent_file * 2))
+
+    if (reduction < expected_value):
+        raise Exception("data_reduction_same_files failed," +
+                        " because reduction ratio should be greater than " +
+                        " {}, was {}.".format(expected_value, reduction))

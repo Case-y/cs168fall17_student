@@ -17,7 +17,6 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
         wan_optimizer.BaseWanOptimizer.__init__(self)
         # Add any code that you like here (but do not add any constructor arguments).
         self.hash_data = dict()
-        self.buffered_hashes = set()
         self.window_size = 48
         self.buffers = dict()               # (src, destination) <--> message so far
         self.receives = dict()
@@ -50,7 +49,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
         if not packet.is_raw_data and packet.payload in self.hash_data:
             # The packet got hashed and is a valid key. Send to the correct clients who are cached.
             message = self.hash_data[packet.payload]
-            self.give_block(packet, message, self.address_to_port[packet.dest])
+            self.give_block(packet, message, self.address_to_port[packet.dest], packet.is_fin)
 
         elif packet.dest in self.address_to_port and packet.src in self.address_to_port:
             # Expected behavior for when a host sends a packet to a host on the same local network
@@ -64,7 +63,7 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                 # set packet.is_raw_data to be intentionally False to terminate block
                 message, self.receives[buffer_key] = self.receives[buffer_key], ""
                 self.hash_data[utils.get_hash(message)] = message
-                self.give_block(packet, message, self.address_to_port[packet.dest])
+                self.give_block(packet, message, self.address_to_port[packet.dest], packet.is_fin)
 
         else:
             # The packet must be destined to a host connected to the other middle box
@@ -72,12 +71,11 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
 
             # Set up scanning through the packet
             start = 0
-            start_window = 0
-            end_window = self.window_sizegit
+            end_window = max(self.window_size, self.buffers[buffer_key].__len__())
             # Include hanging message from before
-            copied_payload = self.buffers[buffer_key] + packet.payload[:]
+            copied_payload = self.buffers[buffer_key] + packet.payload
             while end_window <= packet_size:
-                window_msg = copied_payload[start_window:end_window]
+                window_msg = copied_payload[end_window - self.window_size:end_window]
                 hashed_msg = utils.get_hash(window_msg)
                 if self.GLOBAL_MATCH_BITSTRING == utils.get_last_n_bits(hashed_msg, 13):
                     # New buffering :)
@@ -85,14 +83,13 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
                     block_msg = copied_payload[start:end_window]
                     block_hash_msg = utils.get_hash(block_msg)
 
-                    # Handle hashing
-                    self.handle_hash(packet, block_msg, block_hash_msg)
+                    # Handle hashing, is_fin to False to handle other packets.
+                    self.handle_hash(packet, block_msg, block_hash_msg, False)
 
                     # Restart block / window size
-                    start, start_window = end_window, end_window
+                    start = end_window
                     end_window += self.window_size
                 else:
-                    start_window += 1
                     end_window += 1
 
             # Partake in storing these dangling damn messages...
@@ -110,21 +107,21 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
         hashed_msg = utils.get_hash(hanging_msg)
 
         # Handle hashing
-        self.handle_hash(packet, hanging_msg, hashed_msg)
+        self.handle_hash(packet, hanging_msg, hashed_msg, True)
 
         # Remove specific buffer pool information
         self.buffers[buffer_key] = ""
 
-    def handle_hash(self, packet, message, hashed_message):
+    def handle_hash(self, packet, message, hashed_message, is_fin):
         # Check for key...
-        if hashed_message not in self.buffered_hashes:
-            self.buffered_hashes.add(hashed_message)
-            self.give_block(packet, message, self.wan_port, False)
+        if hashed_message not in self.hash_data:
+            self.hash_data[hashed_message] = message
+            self.give_block(packet, message, self.wan_port, is_fin, False)
         else:
             self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                        False, packet.is_fin, hashed_message), self.wan_port)
+                                        False, is_fin, hashed_message), self.wan_port)
 
-    def give_block(self, packet, message, port, intent=True):
+    def give_block(self, packet, message, port, is_fin, intent=True):
         # Give block to either Wan or client.
         # Intent being False means to terminate the message on the other Wan end.
         start_block = 0
@@ -137,4 +134,4 @@ class WanOptimizer(wan_optimizer.BaseWanOptimizer):
             start_block, end_block = end_block, end_block + utils.MAX_PACKET_SIZE
         carry_over_msg = message[start_block:]
         self.send(tcp_packet.Packet(packet.src, packet.dest,
-                                    intent, packet.is_fin, carry_over_msg), port)
+                                    intent, is_fin, carry_over_msg), port)

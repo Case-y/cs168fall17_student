@@ -107,6 +107,18 @@ def main():
         "--multiple_clients_multiple_files",
         dest="multiple_clients_multiple_files",
         action="store_true")
+    parser.add_argument(
+        "--send_just_over_one_block",
+        dest="send_just_over_one_block",
+        action="store_true")
+    parser.add_argument(
+        "--cache_is_not_flow_specific",
+        dest="cache_is_not_flow_specific",
+        action="store_true")
+    parser.add_argument(
+        "--send_50_random_files",
+        dest="send_50_random_files",
+        action="store_true")
 
     args = parser.parse_args()
     if args.middlebox_name.endswith(".py"):
@@ -236,6 +248,27 @@ def main():
         test_module = multiple_clients_multiple_files
         passed_tests += run_test(
             test_module.multiple_clients_multiple_files,
+            middlebox_module,
+            testing_part_1)
+        total_tests += 1
+    if args.send_just_over_one_block or args.run_all:
+        test_module = send_just_over_one_block
+        passed_tests += run_test(
+            test_module.send_just_over_one_block,
+            middlebox_module,
+            testing_part_1)
+        total_tests += 1
+    if args.cache_is_not_flow_specific or args.run_all:
+        test_module = cache_is_not_flow_specific
+        passed_tests += run_test(
+            test_module.cache_is_not_flow_specific,
+            middlebox_module,
+            testing_part_1)
+        total_tests += 1
+    if args.send_50_random_files or args.run_all:
+        test_module = send_50_random_files
+        passed_tests += run_test(
+            test_module.send_50_random_files,
             middlebox_module,
             testing_part_1)
         total_tests += 1

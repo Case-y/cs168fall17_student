@@ -11,10 +11,4 @@ __all__ = [
     "data_reduction_prefixed_files",
     "data_reduction_prefixed_files_small",
     "verify_data_is_sent_incrementally",
-    "verify_middlebox_handles_interleaved_data",
-    "one_sender_multiple_sends",
-    "multiple_clients_multiple_files",
-    "send_just_over_one_block",
-    "cache_is_not_flow_specific",
-    "send_50_random_files"
-    ]
+    "verify_middlebox_handles_interleaved_data"]
